@@ -219,6 +219,8 @@ export function RunDetail({ id }) {
   const [run, setRun] = useState(null);
   const [error, setError] = useState(null);
   const [msg, setMsg] = useState(null);
+  const [now, setNow] = useState(Date.now());
+  const [openLog, setOpenLog] = useState({});
   useEffect(() => {
     let alive = true; let timer;
     async function poll() {
@@ -226,11 +228,12 @@ export function RunDetail({ id }) {
         const d = await get(`/api/runs/${id}`);
         if (alive) setRun(d);
         const lc = d.state?.life_cycle_state;
-        if (!['TERMINATED', 'SKIPPED', 'INTERNAL_ERROR'].includes(lc)) timer = setTimeout(poll, 8000);
+        if (!['TERMINATED', 'SKIPPED', 'INTERNAL_ERROR'].includes(lc)) timer = setTimeout(poll, 5000);
       } catch (e) { alive && setError(e.message); }
     }
     poll();
-    return () => { alive = false; clearTimeout(timer); };
+    const tick = setInterval(() => setNow(Date.now()), 1000);
+    return () => { alive = false; clearTimeout(timer); clearInterval(tick); };
   }, [id]);
   async function cancel() {
     if (!confirm(`Cancelar o run ${id}?`)) return;
@@ -240,17 +243,44 @@ export function RunDetail({ id }) {
   if (error) return <div className="msg-err">{error}</div>;
   if (!run) return (<><h2>Run <code>{id}</code></h2><Skel n={4} /></>);
   const done = ['TERMINATED', 'SKIPPED', 'INTERNAL_ERROR'].includes(run.state?.life_cycle_state);
+  const tasks = run.task_details || [];
+  const finished = tasks.filter((t) => ['TERMINATED', 'SKIPPED', 'INTERNAL_ERROR'].includes(t.state?.life_cycle_state)).length;
+  const elapsed = run.start_time ? Math.max(0, Math.round(((run.end_time || now) - run.start_time) / 1000)) : 0;
+  const elStr = `${Math.floor(elapsed / 60)}m ${elapsed % 60}s`;
   return (<>
     <h2>Run <code>{run.run_id}</code></h2>
     <Msg ok={msg?.startsWith('OK') ? msg : null} err={msg?.startsWith('ERRO') ? msg : null} />
     <div className="card"><div className="row" style={{ justifyContent: 'space-between' }}>
       <div><LCBadge v={run.state?.life_cycle_state} /> <RSBadge v={run.state?.result_state} />
-        <span className="muted"> · ⏱ {fmtDur(run)} · início {fmtTime(run.start_time)}</span>
-        {!done && <span className="muted"> · atualizando…</span>}</div>
+        <span className="muted"> · ⏱ {elStr}{!done && ' (rodando)'} · início {fmtTime(run.start_time)}</span></div>
       {!done && <button className="danger" onClick={cancel}>Cancelar</button>}
     </div>
-      {run.state?.state_message && <p className="muted">{run.state.state_message}</p>}</div>
-    <h3>Output</h3><pre><code>{JSON.stringify(run.output, null, 2)}</code></pre>
+      {run.state?.state_message && <p className="muted">{run.state.state_message}</p>}
+      {tasks.length > 0 && (<>
+        <div className="muted">Progresso: {finished}/{tasks.length} tasks</div>
+        <div style={{ background: '#0d1017', borderRadius: 8, height: 10, marginTop: 6 }}>
+          <div style={{ width: `${tasks.length ? (finished / tasks.length) * 100 : 0}%`, height: '100%', borderRadius: 8, background: 'linear-gradient(90deg,#4f7cff,#7c5cff)', transition: 'width .5s' }} />
+        </div></>)}</div>
+    <h3>Tasks ao vivo</h3>
+    {tasks.map((t) => {
+      const nb = t.output?.notebook_output;
+      const log = nb?.result || t.output?.error || '';
+      const key = t.task_key;
+      return (
+        <div className="card" key={key}>
+          <div className="row" style={{ justifyContent: 'space-between' }}>
+            <div><strong>{key}</strong> <code>{t.run_id}</code></div>
+            <span><LCBadge v={t.state?.life_cycle_state} /> <RSBadge v={t.state?.result_state} /></span>
+          </div>
+          {t.state?.state_message && <p className="muted">{t.state.state_message}</p>}
+          {log ? (<>
+            <button className="ghost" onClick={() => setOpenLog({ ...openLog, [key]: !openLog[key] })}>
+              {openLog[key] ? '▾ Ocultar logs' : '▸ Ver logs'}</button>
+            {openLog[key] && <pre><code>{String(log).slice(0, 6000)}{String(log).length > 6000 && '\n…(truncado)'}</code></pre>}
+          </>) : <p className="muted">sem saída ainda — aguardando task…</p>}
+        </div>);
+    })}
+    {tasks.length === 0 && (<><h3>Output</h3><pre><code>{JSON.stringify(run.output, null, 2)}</code></pre></>)}
   </>);
 }
 

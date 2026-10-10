@@ -106,6 +106,17 @@ def api_run(run_id):
             run["output"] = client.get_run_output(run_id)
         except DatabricksError:
             run["output"] = {}
+        # progresso por task: estado + saída (logs) de cada task
+        tasks_out = []
+        for t in run.get("tasks", []):
+            item = {"task_key": t.get("task_key"), "run_id": t.get("run_id"),
+                    "state": t.get("state", {})}
+            try:
+                item["output"] = client.get_run_output(t["run_id"])
+            except DatabricksError:
+                item["output"] = {}
+            tasks_out.append(item)
+        run["task_details"] = tasks_out
         return jsonify(run)
     except DatabricksError as e:
         return err(e)
