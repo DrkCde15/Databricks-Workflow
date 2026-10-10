@@ -1,6 +1,0 @@
-{% extends "base.html" %}{% block content %}
-<h2>Workspace: <code>{{path}}</code></h2>
-<form method="get"><input name="path" value="{{path}}"><button>Abrir path</button></form>
-<table><tr><th>path</th><th>tipo</th></tr>
-{% for o in objects %}<tr><td><code>{{o.path}}</code></td><td>{{o.object_type}}</td></tr>
-{% else %}<tr><td colspan="2">Vazio.</td></tr>{% endfor %}</table>{% endblock %}

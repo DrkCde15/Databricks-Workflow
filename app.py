@@ -1,317 +1,320 @@
-"""Orquestrador Databricks — interface web Flask."""
-from flask import Flask, render_template, request, redirect, url_for, flash, jsonify
+"""Orquestrador Databricks — backend API JSON (frontend React em frontend/)."""
+import base64
+import os
+from flask import Flask, request, jsonify, send_from_directory
 from databricks_client import DatabricksClient, DatabricksError
 
 app = Flask(__name__)
 app.secret_key = "db-workflow-dev"
+DIST = os.path.join(os.path.dirname(__file__), "frontend", "dist")
 
 
 def db():
     return DatabricksClient()
 
 
-@app.route("/")
-def index():
-    ctx = {"jobs": [], "clusters": [], "warehouses": [], "error": None}
+def err(e, code=502):
+    return jsonify({"error": str(e)}), code
+
+
+# ---------- Jobs ----------
+@app.get("/api/jobs")
+def api_jobs():
     try:
-        ctx["jobs"] = db().list_jobs(limit=25).get("jobs", [])
+        return jsonify(db().list_jobs(limit=int(request.args.get("limit", 50))))
     except DatabricksError as e:
-        ctx["error"] = str(e)
-    try:
-        ctx["clusters"] = db().list_clusters()
-    except DatabricksError:
-        pass
-    try:
-        ctx["warehouses"] = db().list_warehouses()
-    except DatabricksError:
-        pass
-    return render_template("index.html", **ctx)
+        return err(e)
 
 
-# ---------- Jobs & Runs ----------
-@app.route("/jobs")
-def jobs():
-    try:
-        data = db().list_jobs(limit=50)
-        return render_template("jobs.html", jobs=data.get("jobs", []))
-    except DatabricksError as e:
-        flash(str(e), "error")
-        return render_template("jobs.html", jobs=[])
-
-
-@app.route("/jobs/<int:job_id>")
-def job_detail(job_id):
+@app.get("/api/jobs/<int:job_id>")
+def api_job(job_id):
     try:
         client = db()
         job = client.get_job(job_id)
-        runs = client.list_runs(job_id=job_id, limit=10).get("runs", [])
-        return render_template("job_detail.html", job=job, runs=runs)
+        runs = client.list_runs(job_id=job_id,
+                               limit=int(request.args.get("runs_limit", 10))).get("runs", [])
+        job["recent_runs"] = runs
+        return jsonify(job)
     except DatabricksError as e:
-        flash(str(e), "error")
-        return redirect(url_for("jobs"))
+        return err(e)
 
 
-@app.route("/jobs/<int:job_id>/run", methods=["POST"])
-def job_run(job_id):
+@app.post("/api/jobs")
+def api_job_create():
     try:
-        data = db().run_now(job_id)
-        flash(f"Run disparado: {data.get('run_id')}", "ok")
-        return redirect(url_for("run_detail", run_id=data.get("run_id")))
+        data = request.get_json(force=True)
+        paths = [p.strip() for p in data.get("notebooks", []) if p.strip()]
+        if not paths:
+            return jsonify({"error": "Informe ao menos um notebook."}), 400
+        sched = None
+        if (data.get("cron") or "").strip():
+            sched = {"quartz_cron_expression": data["cron"].strip(),
+                     "timezone_id": data.get("timezone_id", "America/Sao_Paulo"),
+                     "pause_status": "PAUSED" if data.get("paused") else "UNPAUSED"}
+        return jsonify(db().create_notebook_chain(
+            name=data.get("name", "novo-job") or "novo-job",
+            notebook_paths=paths,
+            existing_cluster_id=data.get("existing_cluster_id") or None,
+            schedule=sched)), 201
     except DatabricksError as e:
-        flash(str(e), "error")
-        return redirect(url_for("job_detail", job_id=job_id))
+        return err(e)
 
 
-@app.route("/jobs/<int:job_id>/schedule", methods=["POST"])
-def job_schedule(job_id):
-    """Define/pausa schedule com cron Quartz. Ex: '0 6 * * * ?' = 6h diário."""
+@app.post("/api/jobs/<int:job_id>/run")
+def api_job_run(job_id):
     try:
-        if request.form.get("remove"):
+        return jsonify(db().run_now(job_id)), 201
+    except DatabricksError as e:
+        return err(e)
+
+
+@app.put("/api/jobs/<int:job_id>/schedule")
+def api_job_schedule(job_id):
+    try:
+        data = request.get_json(force=True)
+        if data.get("remove"):
             db().remove_schedule(job_id)
-            flash("Schedule removido.", "ok")
-        else:
-            db().set_schedule(
-                job_id,
-                cron=request.form["cron"].strip(),
-                timezone_id=request.form.get("timezone_id", "America/Sao_Paulo"),
-                pause_status="PAUSED" if request.form.get("paused") else "UNPAUSED",
-            )
-            flash(f"Schedule aplicado: {request.form['cron']}", "ok")
+            return jsonify({"ok": True, "removed": True})
+        if not (data.get("cron") or "").strip():
+            return jsonify({"error": "cron é obrigatório."}), 400
+        db().set_schedule(job_id, cron=data["cron"].strip(),
+                          timezone_id=data.get("timezone_id", "America/Sao_Paulo"),
+                          pause_status="PAUSED" if data.get("paused") else "UNPAUSED")
+        return jsonify({"ok": True})
     except DatabricksError as e:
-        flash(str(e), "error")
-    return redirect(url_for("job_detail", job_id=job_id))
+        return err(e)
 
 
-@app.route("/submit", methods=["GET", "POST"])
-def submit():
-    """Execução ad-hoc de um notebook (runs/submit, sem criar job)."""
-    if request.method == "POST":
-        try:
-            params = {}
-            for line in request.form.get("base_parameters", "").splitlines():
-                if "=" in line:
-                    k, v = line.split("=", 1)
-                    params[k.strip()] = v.strip()
-            data = db().submit_notebook_run(
-                notebook_path=request.form["notebook_path"].strip(),
-                run_name=request.form.get("run_name", "adhoc-notebook") or "adhoc-notebook",
-                base_parameters=params or None,
-                existing_cluster_id=request.form.get("existing_cluster_id") or None,
-            )
-            flash(f"Run ad-hoc criado: {data.get('run_id')}", "ok")
-            return redirect(url_for("run_detail", run_id=data.get("run_id")))
-        except DatabricksError as e:
-            flash(str(e), "error")
-    return render_template("submit.html")
+# ---------- Runs ----------
+@app.get("/api/runs")
+def api_runs():
+    try:
+        kw = {"limit": int(request.args.get("limit", 25))}
+        if request.args.get("job_id"):
+            kw["job_id"] = int(request.args["job_id"])
+        return jsonify(db().list_runs(**kw))
+    except DatabricksError as e:
+        return err(e)
 
 
-@app.route("/jobs/new", methods=["GET", "POST"])
-def job_new():
-    """Cria job salvo (single ou cadeia sequencial estilo Medallion)."""
-    if request.method == "POST":
-        try:
-            paths = [l.strip() for l in request.form.get("notebooks", "").splitlines() if l.strip()]
-            if not paths:
-                flash("Informe ao menos um notebook.", "error")
-                return render_template("job_new.html")
-            sched = None
-            if request.form.get("cron", "").strip():
-                sched = {"quartz_cron_expression": request.form["cron"].strip(),
-                         "timezone_id": request.form.get("timezone_id", "America/Sao_Paulo"),
-                         "pause_status": "PAUSED" if request.form.get("paused") else "UNPAUSED"}
-            data = db().create_notebook_chain(
-                name=request.form.get("name", "novo-job") or "novo-job",
-                notebook_paths=paths,
-                existing_cluster_id=request.form.get("existing_cluster_id") or None,
-                schedule=sched)
-            flash(f"Job criado: {data.get('job_id')}", "ok")
-            return redirect(url_for("job_detail", job_id=data.get("job_id")))
-        except DatabricksError as e:
-            flash(str(e), "error")
-    return render_template("job_new.html")
-
-
-@app.route("/runs/<int:run_id>")
-def run_detail(run_id):
+@app.get("/api/runs/<int:run_id>")
+def api_run(run_id):
     try:
         client = db()
         run = client.get_run(run_id)
         try:
-            output = client.get_run_output(run_id)
+            run["output"] = client.get_run_output(run_id)
         except DatabricksError:
-            output = {}
-        return render_template("run_detail.html", run=run, output=output)
+            run["output"] = {}
+        return jsonify(run)
     except DatabricksError as e:
-        flash(str(e), "error")
-        return redirect(url_for("jobs"))
+        return err(e)
 
 
-@app.route("/runs/<int:run_id>/cancel", methods=["POST"])
-def run_cancel(run_id):
+@app.post("/api/runs/<int:run_id>/cancel")
+def api_run_cancel(run_id):
     try:
         db().cancel_run(run_id)
-        flash(f"Run {run_id} cancelado.", "ok")
+        return jsonify({"ok": True})
     except DatabricksError as e:
-        flash(str(e), "error")
-    return redirect(url_for("run_detail", run_id=run_id))
+        return err(e)
 
 
-@app.route("/api/runs/<int:run_id>/state")
-def run_state(run_id):
-    """JSON para polling do status."""
+@app.get("/api/runs/<int:run_id>/state")
+def api_run_state(run_id):
     try:
-        run = db().get_run(run_id)
-        state = run.get("state", {})
+        state = db().get_run(run_id).get("state", {})
         return jsonify({"life_cycle_state": state.get("life_cycle_state"),
                         "result_state": state.get("result_state"),
                         "state_message": state.get("state_message")})
     except DatabricksError as e:
-        return jsonify({"error": str(e)}), 502
+        return err(e)
+
+
+@app.post("/api/submit")
+def api_submit():
+    try:
+        data = request.get_json(force=True)
+        if not (data.get("notebook_path") or "").strip():
+            return jsonify({"error": "notebook_path é obrigatório."}), 400
+        return jsonify(db().submit_notebook_run(
+            notebook_path=data["notebook_path"].strip(),
+            run_name=data.get("run_name") or "adhoc-notebook",
+            base_parameters=data.get("base_parameters") or None,
+            existing_cluster_id=data.get("existing_cluster_id") or None)), 201
+    except DatabricksError as e:
+        return err(e)
 
 
 # ---------- Clusters ----------
-@app.route("/clusters")
-def clusters():
+@app.get("/api/clusters")
+def api_clusters():
     try:
-        return render_template("clusters.html", clusters=db().list_clusters())
+        return jsonify({"clusters": db().list_clusters()})
     except DatabricksError as e:
-        flash(str(e), "error")
-        return render_template("clusters.html", clusters=[])
+        return err(e)
 
 
-@app.route("/clusters/new", methods=["GET", "POST"])
-def cluster_new():
-    """Cria cluster all-purpose (POST /api/2.0/clusters/create)."""
-    client = db()
+@app.post("/api/clusters")
+def api_cluster_create():
     try:
-        node_types = client.list_node_types().get("node_types", [])
-        spark_versions = client.list_spark_versions().get("versions", [])
-    except DatabricksError as e:
-        flash(str(e), "error")
-        node_types, spark_versions = [], []
-    if request.method == "POST":
-        try:
-            data = client.create_cluster(
-                cluster_name=request.form.get("cluster_name", "meu-cluster"),
-                spark_version=request.form["spark_version"],
-                node_type_id=request.form["node_type_id"],
-                num_workers=request.form.get("num_workers", 1),
-                autotermination_minutes=request.form.get("autotermination_minutes", 30),
-            )
-            flash(f"Cluster criando: {data.get('cluster_id')}", "ok")
-            return redirect(url_for("clusters"))
-        except DatabricksError as e:
-            flash(str(e), "error")
-    return render_template("cluster_new.html", node_types=node_types,
-                           spark_versions=spark_versions)
+        data = request.get_json(force=True)
+        return jsonify(db().create_cluster(
+            cluster_name=data.get("cluster_name", "meu-cluster"),
+            spark_version=data["spark_version"],
+            node_type_id=data["node_type_id"],
+            num_workers=data.get("num_workers", 1),
+            autotermination_minutes=data.get("autotermination_minutes", 30))), 201
+    except (DatabricksError, KeyError) as e:
+        return err(e)
 
 
-@app.route("/clusters/<cluster_id>/<action>", methods=["POST"])
-def cluster_action(cluster_id, action):
-    fn = {"start": db().start_cluster, "restart": db().restart_cluster,
-          "terminate": db().terminate_cluster}.get(action)
-    if not fn:
-        flash("Ação inválida.", "error")
-        return redirect(url_for("clusters"))
+@app.post("/api/clusters/<cluster_id>/<action>")
+def api_cluster_action(cluster_id, action):
     try:
-        fn(cluster_id)
-        flash(f"Cluster {cluster_id}: {action} enviado.", "ok")
+        client = db()
+        fn = {"start": client.start_cluster, "restart": client.restart_cluster,
+              "terminate": client.terminate_cluster}.get(action)
+        if not fn:
+            return jsonify({"error": "Ação inválida."}), 400
+        return jsonify(fn(cluster_id))
     except DatabricksError as e:
-        flash(str(e), "error")
-    return redirect(url_for("clusters"))
+        return err(e)
+
+
+@app.get("/api/cluster-options")
+def api_cluster_options():
+    try:
+        client = db()
+        return jsonify({"node_types": client.list_node_types().get("node_types", []),
+                        "spark_versions": client.list_spark_versions().get("versions", [])})
+    except DatabricksError as e:
+        return err(e)
 
 
 # ---------- Workspace ----------
-@app.route("/workspace")
-def workspace():
-    path = request.args.get("path", "/")
+@app.get("/api/workspace")
+def api_workspace():
     try:
-        data = db().workspace_list(path)
-        return render_template("workspace.html", path=path,
-                               objects=data.get("objects", []))
+        return jsonify(db().workspace_list(request.args.get("path", "/")))
     except DatabricksError as e:
-        flash(str(e), "error")
-        return render_template("workspace.html", path=path, objects=[])
+        return err(e)
 
 
-@app.route("/workspace/import", methods=["GET", "POST"])
-def workspace_import():
-    """Envio de notebook/arquivo (base64, limite 10MB)."""
-    import base64
-    if request.method == "POST":
-        try:
-            f = request.files.get("file")
-            if not f or not f.filename:
-                flash("Selecione um arquivo.", "error")
-                return render_template("workspace_import.html")
-            raw = f.read()
-            if len(raw) > 10 * 1024 * 1024:
-                flash("Limite de 10MB da Workspace API excedido — use /files (Volumes).", "error")
-                return render_template("workspace_import.html")
-            db().workspace_import(
-                path=request.form["path"].strip(),
-                content_b64=base64.b64encode(raw).decode(),
-                fmt=request.form.get("format", "SOURCE"),
-                language=request.form.get("language") or None,
-                overwrite=bool(request.form.get("overwrite")),
-            )
-            flash(f"Importado: {request.form['path']}", "ok")
-            return redirect(url_for("workspace", path="/".join(request.form["path"].split("/")[:-1]) or "/"))
-        except DatabricksError as e:
-            flash(str(e), "error")
-    return render_template("workspace_import.html")
+@app.post("/api/workspace/import")
+def api_workspace_import():
+    try:
+        f = request.files.get("file")
+        if not f or not f.filename:
+            return jsonify({"error": "Selecione um arquivo."}), 400
+        raw = f.read()
+        if len(raw) > 10 * 1024 * 1024:
+            return jsonify({"error": "Limite de 10MB — use /api/files (Volumes)."}), 400
+        db().workspace_import(path=request.form["path"].strip(),
+                              content_b64=base64.b64encode(raw).decode(),
+                              fmt=request.form.get("format", "SOURCE"),
+                              language=request.form.get("language") or None,
+                              overwrite=request.form.get("overwrite", "1") == "1")
+        return jsonify({"ok": True, "path": request.form["path"]}), 201
+    except DatabricksError as e:
+        return err(e)
 
 
 # ---------- Files (Volumes UC) ----------
-DEFAULT_VOLUME = "/Volumes/workspace/default/datasets"
-
-
-@app.route("/files", methods=["GET", "POST"])
-def files():
-    """Browse + upload de csv/xlsx/json/parquet para /Volumes/..."""
-    dir_path = request.args.get("path", DEFAULT_VOLUME) if request.method == "GET" else request.form.get("dir", DEFAULT_VOLUME)
-    contents, error = [], None
-    if request.method == "POST":
-        try:
-            f = request.files.get("file")
-            if not f or not f.filename:
-                flash("Selecione um arquivo.", "error")
-            else:
-                dest = (request.form.get("dir", "/Volumes").rstrip("/") + "/" + f.filename)
-                db().fs_upload(dest, f.read(),
-                               overwrite=bool(request.form.get("overwrite", "1")))
-                flash(f"Upload OK: {dest}", "ok")
-                dir_path = request.form.get("dir", "/Volumes")
-        except DatabricksError as e:
-            flash(str(e), "error")
+@app.get("/api/files")
+def api_files():
     try:
-        contents = db().fs_list(dir_path).get("contents", [])
+        return jsonify(db().fs_list(request.args.get("path", "/Volumes/workspace/default/datasets"),
+                                    page_size=int(request.args.get("page_size", 100))))
     except DatabricksError as e:
-        error = str(e)
-    return render_template("files.html", path=dir_path, contents=contents, error=error)
+        return err(e)
+
+
+@app.post("/api/files")
+def api_files_upload():
+    try:
+        f = request.files.get("file")
+        if not f or not f.filename:
+            return jsonify({"error": "Selecione um arquivo."}), 400
+        dest = (request.form.get("dir", "/Volumes/workspace/default/datasets").rstrip("/")
+                + "/" + f.filename)
+        db().fs_upload(dest, f.read(), overwrite=request.form.get("overwrite", "1") == "1")
+        return jsonify({"ok": True, "path": dest}), 201
+    except DatabricksError as e:
+        return err(e)
 
 
 # ---------- SQL ----------
-@app.route("/sql", methods=["GET", "POST"])
-def sql():
-    result = None
+@app.get("/api/warehouses")
+def api_warehouses():
     try:
-        warehouses = db().list_warehouses()
+        return jsonify({"warehouses": db().list_warehouses()})
     except DatabricksError as e:
-        flash(str(e), "error")
-        warehouses = []
-    if request.method == "POST":
-        try:
-            result = db().execute_statement(
-                statement=request.form["statement"],
-                warehouse_id=request.form["warehouse_id"],
-                catalog=request.form.get("catalog") or None,
-                schema=request.form.get("schema") or None,
-            )
-            flash(f"Statement {result.get('statement_id')} ({result.get('status', {}).get('state')})", "ok")
-        except DatabricksError as e:
-            flash(str(e), "error")
-    return render_template("sql.html", warehouses=warehouses, result=result)
+        return err(e)
+
+
+@app.post("/api/statements")
+def api_statements():
+    try:
+        data = request.get_json(force=True)
+        return jsonify(db().execute_statement(
+            statement=data["statement"], warehouse_id=data["warehouse_id"],
+            catalog=data.get("catalog") or None, schema=data.get("schema") or None)), 201
+    except (DatabricksError, KeyError) as e:
+        return err(e)
+
+
+@app.get("/api/statements/<statement_id>")
+def api_statement_get(statement_id):
+    try:
+        return jsonify(db().get_statement(statement_id))
+    except DatabricksError as e:
+        return err(e)
+
+
+# ---------- Unity Catalog ----------
+@app.get("/api/uc/catalogs")
+def api_uc_catalogs():
+    try:
+        return jsonify({"catalogs": db().list_catalogs()})
+    except DatabricksError as e:
+        return err(e)
+
+
+@app.get("/api/uc/schemas")
+def api_uc_schemas():
+    try:
+        return jsonify({"schemas": db().list_schemas(request.args["catalog"])})
+    except (DatabricksError, KeyError) as e:
+        return err(e)
+
+
+@app.get("/api/uc/volumes")
+def api_uc_volumes():
+    try:
+        return jsonify({"volumes": db().list_volumes(request.args["catalog"],
+                                                      request.args["schema"])})
+    except (DatabricksError, KeyError) as e:
+        return err(e)
+
+
+# ---------- SPA ----------
+@app.get("/")
+def spa_root():
+    return spa_fallback("")
+
+
+@app.get("/<path:path>")
+def spa_fallback(path):
+    if path.startswith("api/"):
+        return jsonify({"error": "Not found."}), 404
+    if os.path.isdir(DIST):
+        full = os.path.join(DIST, path)
+        if path and os.path.isfile(full):
+            return send_from_directory(DIST, path)
+        return send_from_directory(DIST, "index.html")
+    return jsonify({"ok": True,
+                    "message": "API no ar. Build do frontend ainda não gerado (veja frontend/)."})
 
 
 if __name__ == "__main__":

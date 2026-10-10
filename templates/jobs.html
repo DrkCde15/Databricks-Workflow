@@ -1,9 +1,0 @@
-{% extends "base.html" %}{% block content %}
-<h2>Jobs</h2>
-<a class="btn" href="/jobs/new">+ Novo job</a>
-{% for j in jobs %}<div class="card">
-<strong>{{j.settings.name}}</strong> <code>{{j.job_id}}</code> — {{j.creator_user_name}}
-<a class="btn" href="/jobs/{{j.job_id}}">Abrir</a>
-<form method="post" action="/jobs/{{j.job_id}}/run" style="display:inline">
-<button type="submit">Run Now</button></form>
-</div>{% else %}<p>Nenhum job.</p>{% endfor %}{% endblock %}

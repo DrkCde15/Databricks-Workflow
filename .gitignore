@@ -3,3 +3,4 @@ __pycache__
 venv/
 .env
 .pycache/
+frontend/node_modules/

@@ -1,9 +1,0 @@
-{% extends "base.html" %}{% block content %}
-<h2>Clusters</h2>
-<a class="btn" href="/clusters/new">+ Novo cluster</a>
-{% for c in clusters %}<div class="card">
-<strong>{{c.cluster_name}}</strong> <code>{{c.cluster_id}}</code> — {{c.state}}
-<form method="post" action="/clusters/{{c.cluster_id}}/start" style="display:inline"><button>Start</button></form>
-<form method="post" action="/clusters/{{c.cluster_id}}/restart" style="display:inline"><button>Restart</button></form>
-<form method="post" action="/clusters/{{c.cluster_id}}/terminate" style="display:inline"><button>Terminate</button></form>
-</div>{% else %}<p>Nenhum cluster.</p>{% endfor %}{% endblock %}
