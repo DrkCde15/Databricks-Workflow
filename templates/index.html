@@ -1,0 +1,11 @@
+{% extends "base.html" %}{% block content %}
+<h2>Dashboard</h2>
+{% if error %}<div class="flash-error">{{error}}</div>{% endif %}
+<div class="grid">
+<div class="card"><h3>Jobs ({{jobs|length}})</h3>{% for j in jobs %}
+<div>{{j.settings.name}} <a class="btn" href="/jobs/{{j.job_id}}">{{j.job_id}}</a></div>{% endfor %}</div>
+<div class="card"><h3>Clusters ({{clusters|length}})</h3>{% for c in clusters %}
+<div>{{c.cluster_name}} — {{c.state}}</div>{% else %}<p>Nenhum cluster.</p>{% endfor %}</div>
+<div class="card"><h3>Warehouses ({{warehouses|length}})</h3>{% for w in warehouses %}
+<div>{{w.name}} — {{w.state}}</div>{% else %}<p>Nenhum warehouse.</p>{% endfor %}</div>
+</div>{% endblock %}

@@ -1,0 +1,15 @@
+{% extends "base.html" %}{% block content %}
+<h2>Arquivos — Volumes UC <code>{{path}}</code></h2>
+<div class="card"><form method="get"><input name="path" value="{{path}}">
+<button>Navegar</button></form></div>
+{% if error %}<div class="flash-error">{{error}}</div>
+<p>Dica: o path precisa ser um Volume existente, ex: <code>/Volumes/catalog/schema/volume</code>.</p>{% endif %}
+<table><tr><th>nome</th><th>dir?</th><th>tamanho</th></tr>
+{% for o in contents %}<tr><td><code>{{o.path}}</code></td><td>{{o.is_directory}}</td>
+<td>{{o.file_size|default('—')}}</td></tr>{% else %}<tr><td colspan="3">Vazio ou path inválido.</td></tr>{% endfor %}</table>
+<div class="card"><h3>Upload (csv, xlsx, json, parquet... até 5 GiB)</h3>
+<form method="post" enctype="multipart/form-data">
+<label>Diretório destino</label><input name="dir" value="{{path}}">
+<label>Arquivo</label><input type="file" name="file" required>
+<label><input type="checkbox" name="overwrite" checked value="1" style="width:auto"> Sobrescrever</label>
+<button>Enviar</button></form></div>{% endblock %}

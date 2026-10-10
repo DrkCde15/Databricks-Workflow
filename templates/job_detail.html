@@ -1,0 +1,24 @@
+{% extends "base.html" %}{% block content %}
+<h2>{{job.settings.name}} <code>{{job.job_id}}</code></h2>
+<form method="post" action="/jobs/{{job.job_id}}/run"><button>Disparar Run Now</button></form>
+<div class="card"><h3>Schedule (cron Quartz)</h3>
+<p>Atual: <code>{{job.settings.schedule|default('sem schedule — só manual') }}</code></p>
+<form method="post" action="/jobs/{{job.job_id}}/schedule">
+<label>Cron Quartz (ex: <code>0 6 * * * ?</code> = 6h todo dia)</label>
+<input name="cron" value="{{(job.settings.schedule or {}).quartz_cron_expression|default('0 6 * * * ?')}}">
+<label>Timezone (Java ID)</label><input name="timezone_id" value="{{(job.settings.schedule or {}).timezone_id|default('America/Sao_Paulo')}}">
+<label><input type="checkbox" name="paused" style="width:auto"
+{% if (job.settings.schedule or {}).pause_status == 'PAUSED' %}checked{% endif %}> Pausado</label>
+<button>Aplicar schedule</button></form>
+<form method="post" action="/jobs/{{job.job_id}}/schedule">
+<input type="hidden" name="remove" value="1"><button>Remover schedule</button></form></div>
+<h3>Tasks</h3>
+<table><tr><th>task_key</th><th>notebook</th><th>depends_on</th></tr>
+{% for t in job.settings.tasks %}<tr><td>{{t.task_key}}</td>
+<td><code>{{(t.notebook_task or {}).notebook_path}}</code></td>
+<td>{{t.depends_on|default([])}}</td></tr>{% endfor %}</table>
+<h3>Últimos runs</h3>
+{% for r in runs %}<div class="card">
+<a class="btn" href="/runs/{{r.run_id}}">{{r.run_id}}</a>
+{{(r.state or {}).life_cycle_state}} / {{(r.state or {}).result_state}}
+</div>{% else %}<p>Sem runs.</p>{% endfor %}{% endblock %}

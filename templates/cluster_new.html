@@ -1,0 +1,13 @@
+{% extends "base.html" %}{% block content %}
+<h2>Novo cluster</h2>
+<div class="card"><form method="post">
+<label>Nome</label><input name="cluster_name" required value="meu-cluster">
+<label>Spark / Runtime version</label><select name="spark_version" required>{% for v in spark_versions %}
+<option value="{{v.key}}">{{v.name|default(v.key)}}</option>{% endfor %}</select>
+<label>Node type</label><select name="node_type_id" required>{% for n in node_types %}
+<option value="{{n.node_type_id}}">{{n.node_type_id}} — {{n.memory_mb}}MB / {{n.num_cores}} cores</option>{% endfor %}</select>
+<label>Workers</label><input name="num_workers" type="number" min="0" value="1">
+<label>Autoterminação (min)</label><input name="autotermination_minutes" type="number" min="10" value="30">
+<button>Criar cluster</button></form></div>
+<p><code>POST /api/2.0/clusters/create</code> — o cluster nasce <code>PENDING</code> e leva minutos até <code>RUNNING</code>.</p>
+{% endblock %}

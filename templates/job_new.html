@@ -1,0 +1,15 @@
+{% extends "base.html" %}{% block content %}
+<h2>Novo job</h2>
+<div class="card"><form method="post">
+<label>Nome do job</label><input name="name" required placeholder="Meu pipeline">
+<label>Notebooks (um path por linha, executam em sequência)</label>
+<textarea name="notebooks" rows="4" required placeholder="/Workspace/Users/voce@empresa.com/Etapa1&#10;/Workspace/Users/voce@empresa.com/Etapa2"></textarea>
+<label>Existing cluster ID (vazio = serverless)</label>
+<input name="existing_cluster_id" placeholder="ex: 0923-164208-meows279">
+<label>Schedule cron Quartz (opcional, ex: <code>0 6 * * * ?</code>)</label>
+<input name="cron" placeholder="vazio = só manual">
+<label>Timezone</label><input name="timezone_id" value="America/Sao_Paulo">
+<label><input type="checkbox" name="paused" style="width:auto"> Criar pausado</label>
+<button>Criar job</button></form></div>
+<p><code>POST /api/2.2/jobs/create</code> — com 1 notebook vira single-task, com vários vira cadeia com <code>depends_on</code>.</p>
+{% endblock %}
